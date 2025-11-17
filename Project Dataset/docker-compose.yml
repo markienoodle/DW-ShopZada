@@ -1,0 +1,30 @@
+# This file manages and connects all your containers.
+# This is the only file you run.
+version: '3.8'
+
+services:
+  # Service 1: Your Python ETL Application
+  # This is the "kitchen" built from your Dockerfile.
+  etl-app:
+    build: .
+    container_name: shopzada-etl-app
+    volumes:
+      # This syncs your local folder (left) with the
+      # /app folder inside the container (right).
+      - .:/app
+    
+    # Keeps the container running so you can log into it.
+    command: tail -f /dev/null
+
+  # Service 2: Your Postgres Database
+  # This is your actual Data Warehouse.
+  db:
+    image: postgres:13
+    container_name: shopzada-postgres-db
+    environment:
+      POSTGRES_USER: shopzada_admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: shopzada_dwh
+    ports:
+      # Lets you connect from your PC on port 5432
+      - "5432:5432"
