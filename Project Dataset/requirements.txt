@@ -1,0 +1,12 @@
+# --- Core Data Analysis ---
+pandas
+numpy
+
+# --- For Reading Special Files ---
+openpyxl    # For Excel (.xlsx)
+lxml        # For HTML scraping (.html)
+pyarrow     # For Parquet files (.parquet)
+
+# --- For Connecting to the Database (Week 3/4) ---
+sqlalchemy
+psycopg2-binary
