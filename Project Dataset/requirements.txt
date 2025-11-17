@@ -10,3 +10,5 @@ pyarrow     # For Parquet files (.parquet)
 # --- For Connecting to the Database (Week 3/4) ---
 sqlalchemy
 psycopg2-binary
+
+# Subject to change 
