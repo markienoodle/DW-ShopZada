@@ -1,30 +1,133 @@
-# This file manages and connects all your containers.
-# This is the only file you run.
 version: '3.8'
 
+# ==========================================
+# AIRFLOW COMMON CONFIGURATION
+# ==========================================
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.7.1
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-metadata-db/airflow
+    AIRFLOW_VAR_SHOPZADA_DB_CONN: postgresql+psycopg2://shopzada_admin:password123@db/shopzada_dwh
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+  volumes:
+    # 1. DAGS/LOGS/PLUGINS (Moved INSIDE workflows folder to keep root clean)
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./plugins:/opt/airflow/plugins
+    
+    # 2. SCRIPTS (Allowed in Root per your requirements image)
+    - ../scripts:/opt/airflow/scripts
+    
+    # 3. DATA (Stays in workflows folder)
+    - ./Project Dataset:/opt/airflow/Project Dataset
+  depends_on:
+    - airflow-metadata-db
+    - db
+  networks:
+    - shopzada-network
+
 services:
-  # Service 1: Your Python ETL Application
-  # This is the "kitchen" built from your Dockerfile.
+  # ==========================================
+  # 1. SHOPZADA INFRASTRUCTURE
+  # ==========================================
+  db:
+    image: postgres:14
+    container_name: shopzada-postgres-db
+    environment:
+      - POSTGRES_USER=shopzada_admin
+      - POSTGRES_PASSWORD=password123
+      - POSTGRES_DB=shopzada_dwh
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - shopzada-network
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: shopzada-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=root
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+    networks:
+      - shopzada-network
+
   etl-app:
     build: .
     container_name: shopzada-etl-app
+    depends_on:
+      - db
+    environment:
+      - DB_HOST=db
+      - DB_NAME=shopzada_dwh
+      - DB_USER=shopzada_admin
+      - DB_PASSWORD=password123
+      - DB_PORT=5432
     volumes:
-      # This syncs your local folder (left) with the
-      # /app folder inside the container (right).
-      - .:/app
-    
-    # Keeps the container running so you can log into it.
+      # Scripts allowed in root
+      - ../scripts:/app/scripts
+      # Data inside workflows
+      - ./Project Dataset:/app/Project Dataset
+      # Output in root (Assuming output is allowed or temporary)
+      - ../output:/app/output
+    networks:
+      - shopzada-network
     command: tail -f /dev/null
 
-  # Service 2: Your Postgres Database
-  # This is your actual Data Warehouse.
-  db:
+  # ==========================================
+  # 2. AIRFLOW INFRASTRUCTURE
+  # ==========================================
+  airflow-metadata-db:
     image: postgres:13
-    container_name: shopzada-postgres-db
+    container_name: airflow-metadata-db
     environment:
-      POSTGRES_USER: shopzada_admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: shopzada_dwh
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    networks:
+      - shopzada-network
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: airflow
+      _AIRFLOW_WWW_USER_PASSWORD: airflow
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
     ports:
-      # Lets you connect from your PC on port 5432
-      - "5432:5432"
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      - airflow-init
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    depends_on:
+      - airflow-init
+
+volumes:
+  postgres_data:
+
+networks:
+  shopzada-network:
