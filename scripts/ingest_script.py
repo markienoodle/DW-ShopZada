@@ -1,3 +1,12 @@
+# ----------------------------------------------------------
+# 0. THESE ARE DEPENDENCIES YOU NEED TO INSTALL, USE THE TERMINAL FOR THIS
+# ---------------------------------------------------------- 
+
+
+pip install pandas sqlalchemy psycopg2 pyarrow openpyxl
+
+# ----------------------------------------------------------  
+
 import os
 import re
 import pandas as pd
@@ -9,7 +18,7 @@ from sqlalchemy.dialects.postgresql import (
 # ----------------------------------------------------------
 # 1. EDIT THIS BLOCK FOR YOUR LOCAL POSTGRES INSTANCE
 # ----------------------------------------------------------
-DATABASE_URL = "postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:5432/YOUR_DATABASE"
+DATABASE_URL = "postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:5432/YOUR_DATABASE" #NEED PALITAN
 engine = create_engine(DATABASE_URL)
 metadata = MetaData()
 
@@ -157,8 +166,22 @@ def ingest_folder(folder_path):
 # 9. Example usage
 # ----------------------------------------------------------
 if __name__ == "__main__":
-    folder_path = "data_files"  # ← change this to your folder path
+    folder_path = "./workflows/Project Dataset/Business Department"  # ← change this to your folder path.
+# renzo: this path assumes na this code is inside sql folder. pwedeng iedit pa yung path if nagerror. another issue na magpop up pag di gumana is ayusin folder names na walang space.
     ingest_folder(folder_path)
+
+    folder_path = "./workflows/Project Dataset/Customer Management Department" 
+    ingest_folder(folder_path)
+
+    folder_path = "./workflows/Project Dataset/Enterprise Department" 
+    ingest_folder(folder_path)
+
+    folder_path = "./workflows/Project Dataset/Marketing Department" 
+    ingest_folder(folder_path)
+
+    folder_path = "./workflows/Project Dataset/Operations Department" 
+    ingest_folder(folder_path)
+
 
 # ASSUMES ALL FILES ARE IN ONE FOLDER
 # EDIT THE VARIABLES DATABASE_URL AND folder_path
