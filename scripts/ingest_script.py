@@ -1,74 +1,83 @@
-# ----------------------------------------------------------
-# 0. THESE ARE DEPENDENCIES YOU NEED TO INSTALL, USE THE TERMINAL FOR THIS
-# ---------------------------------------------------------- 
-
-
-pip install pandas sqlalchemy psycopg2 pyarrow openpyxl
-
-# ----------------------------------------------------------  
-
 import os
 import re
 import pandas as pd
-from sqlalchemy import create_engine, MetaData, Table, Column
+from sqlalchemy import create_engine, MetaData, Table, Column, inspect
 from sqlalchemy.dialects.postgresql import (
     VARCHAR, INTEGER, FLOAT, BOOLEAN, DATE, TIMESTAMP
 )
 
 # ----------------------------------------------------------
-# 1. EDIT THIS BLOCK FOR YOUR LOCAL POSTGRES INSTANCE
+# CONFIGURATION: SECURITY & SAFETY
 # ----------------------------------------------------------
-DATABASE_URL = "postgresql+psycopg2://postgres:YOUR_PASSWORD@localhost:5432/YOUR_DATABASE" #NEED PALITAN
-engine = create_engine(DATABASE_URL)
+# Columns to ALWAYS drop for privacy/security
+DROP_COLUMNS = [
+    "credit_card_number", 
+    "cvv", 
+    "password", 
+    "social_security_number"
+]
+
+# ----------------------------------------------------------
+# 1. SETUP DATABASE CONNECTION
+# ----------------------------------------------------------
+DB_USER = os.getenv('DB_USER', 'shopzada_admin')
+DB_PASSWORD = os.getenv('DB_PASSWORD', 'password123')
+DB_HOST = os.getenv('DB_HOST', 'db') 
+DB_PORT = os.getenv('DB_PORT', '5432')
+DB_NAME = os.getenv('DB_NAME', 'shopzada_dwh')
+
+DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+print(f"🔌 Connecting to database at: {DB_HOST}...")
+
+try:
+    engine = create_engine(DATABASE_URL)
+    connection = engine.connect()
+    print("✅ Connection successful!")
+    connection.close()
+except Exception as e:
+    print(f"❌ Connection failed: {e}")
+    exit(1)
+
 metadata = MetaData()
 
-
 # ----------------------------------------------------------
-# 2. Load a single file → DataFrame
+# 2. HELPER: Load a single file → DataFrame
 # ----------------------------------------------------------
 def load_file_to_dataframe(file_path):
     ext = os.path.splitext(file_path)[1].lower()
-
-    if ext == ".csv":
-        return pd.read_csv(file_path)
-    elif ext == ".parquet":
-        return pd.read_parquet(file_path)
-    elif ext in [".pkl", ".pickle"]:
-        return pd.read_pickle(file_path)
-    elif ext == ".html":
-        return pd.read_html(file_path)[0]
-    elif ext == ".json":
-        return pd.read_json(file_path)
-    elif ext == ".xlsx":
-        return pd.read_excel(file_path)
-    else:
-        raise ValueError(f"Unsupported file type: {ext}")
-
+    
+    try:
+        if ext == ".csv":
+            return pd.read_csv(file_path)
+        elif ext == ".parquet":
+            return pd.read_parquet(file_path)
+        elif ext in [".pkl", ".pickle"]:
+            return pd.read_pickle(file_path)
+        elif ext == ".html":
+            return pd.read_html(file_path)[0]
+        elif ext == ".json":
+            return pd.read_json(file_path)
+        elif ext == ".xlsx":
+            return pd.read_excel(file_path)
+        else:
+            print(f"⚠️ Unsupported file type: {ext}")
+            return None
+    except Exception as e:
+        print(f"❌ Error reading {file_path}: {e}")
+        return None
 
 # ----------------------------------------------------------
-# 3. Extract table name from filename
+# 3. HELPER: Extract table name from filename
 # ----------------------------------------------------------
 def extract_table_name(filename):
-    """
-    Extracts table name by taking everything before the first digit.
-    Example:
-        line_item_data_prices1.csv → line_item_data_prices
-        order_data_20200101-20200701.parquet → order_data_
-    """
-
     base = os.path.splitext(filename)[0]
-
-    # Split before first digit
     match = re.split(r"\d", base, maxsplit=1)[0]
-
-    # Remove trailing underscore, if present
-    match = match.rstrip("_")
-
-    return match.lower()
-
+    clean_name = match.rstrip("_").lower()
+    return clean_name
 
 # ----------------------------------------------------------
-# 4. Map pandas dtype → PostgreSQL type
+# 4. HELPER: Map pandas dtype → PostgreSQL type
 # ----------------------------------------------------------
 def map_dtype(dtype):
     if pd.api.types.is_integer_dtype(dtype):
@@ -82,106 +91,121 @@ def map_dtype(dtype):
     else:
         return VARCHAR
 
-
 # ----------------------------------------------------------
-# 5. Create table if missing
+# 5. LOGIC: Create table if missing
 # ----------------------------------------------------------
 def create_table_if_not_exists(df, table_name):
-    metadata.reflect(bind=engine)
-
-    if table_name in metadata.tables:
-        print(f"Table '{table_name}' already exists. Skipping creation.")
+    inspector = inspect(engine)
+    
+    if inspector.has_table(table_name):
+        print(f"   -> Table '{table_name}' already exists. Appending data...")
         return
 
-    print(f"Creating table '{table_name}'...")
-
+    print(f"   -> Table '{table_name}' does not exist. Creating it...")
+    
     columns = []
     for col_name, dtype in df.dtypes.items():
+        clean_col = col_name.replace(" ", "_").lower()
         pg_type = map_dtype(dtype)
-        columns.append(Column(col_name, pg_type))
-
+        columns.append(Column(clean_col, pg_type))
+    
     table = Table(table_name, metadata, *columns)
     metadata.create_all(engine)
-
-    print(f"Table '{table_name}' created.")
-
+    print(f"   -> Table '{table_name}' created successfully.")
 
 # ----------------------------------------------------------
-# 6. Insert dataframe into PostgreSQL
+# 6. LOGIC: Insert dataframe into PostgreSQL
 # ----------------------------------------------------------
 def load_dataframe_to_postgres(df, table_name):
-    df.to_sql(
-        table_name,
-        engine,
-        if_exists="append",
-        index=False
-    )
-    print(f"Inserted {len(df)} rows into '{table_name}'.")
-
+    df.columns = [c.replace(" ", "_").lower() for c in df.columns]
+    
+    try:
+        df.to_sql(
+            table_name,
+            engine,
+            if_exists="append", 
+            index=False,
+            method='multi',      
+            chunksize=1000       
+        )
+        print(f"   -> ✅ Inserted {len(df)} rows into '{table_name}'.")
+    except Exception as e:
+        print(f"   -> ❌ Failed to insert data: {e}")
 
 # ----------------------------------------------------------
-# 7. Ingest a single file (with automatic table grouping)
+# 7. LOGIC: Ingest a single file
 # ----------------------------------------------------------
 def ingest_file(file_path):
     filename = os.path.basename(file_path)
     table_name = extract_table_name(filename)
 
-    print(f"\n📄 File: {filename}")
-    print(f"➡ Target table: {table_name}")
-
+    print(f"\n📄 Processing: {filename}")
+    
     df = load_file_to_dataframe(file_path)
-
-    create_table_if_not_exists(df, table_name)
-    load_dataframe_to_postgres(df, table_name)
-
-    print(f"✅ Completed ingestion for: {filename}")
-
+    
+    if df is not None and not df.empty:
+        # --- SECURITY CHECK ---
+        # Check if any columns match our blacklist and drop them
+        initial_cols = len(df.columns)
+        
+        # Drop columns if they exist in the dataframe
+        cols_to_drop = [col for col in DROP_COLUMNS if col in df.columns]
+        if cols_to_drop:
+            df.drop(columns=cols_to_drop, inplace=True)
+            print(f"   🛡️ SECURITY: Dropped sensitive columns: {cols_to_drop}")
+        
+        create_table_if_not_exists(df, table_name)
+        load_dataframe_to_postgres(df, table_name)
+    else:
+        print("   -> Skipped (Empty or invalid dataframe)")
 
 # ----------------------------------------------------------
-# 8. INGEST ALL FILES IN A FOLDER
+# 8. LOGIC: Scan Folder
 # ----------------------------------------------------------
-def ingest_folder(folder_path):
-    print(f"\n🔍 Scanning folder: {folder_path}")
+def ingest_folder(base_folder_path):
+    print(f"\n🔍 Scanning folder: {base_folder_path}")
+    
+    if not os.path.exists(base_folder_path):
+        print(f"❌ Folder not found: {base_folder_path}")
+        print("   -> Are you running this inside Docker? Check your volume mounts.")
+        return
 
     supported_exts = [".csv", ".parquet", ".pkl", ".pickle", ".html", ".json", ".xlsx"]
+    
     files = [
-        os.path.join(folder_path, f)
-        for f in os.listdir(folder_path)
+        os.path.join(base_folder_path, f)
+        for f in os.listdir(base_folder_path)
         if os.path.splitext(f)[1].lower() in supported_exts
     ]
 
     if not files:
-        print("❌ No supported files found.")
+        print("   -> No supported files found.")
         return
 
-    print(f"📁 Found {len(files)} files.\n")
+    print(f"   -> Found {len(files)} files.")
 
     for file_path in files:
         ingest_file(file_path)
 
-    print("\n🎉 All files ingested successfully!")
-
-
 # ----------------------------------------------------------
-# 9. Example usage
+# 9. MAIN EXECUTION
 # ----------------------------------------------------------
 if __name__ == "__main__":
-    folder_path = "./workflows/Project Dataset/Business Department"  # ← change this to your folder path.
-# renzo: this path assumes na this code is inside sql folder. pwedeng iedit pa yung path if nagerror. another issue na magpop up pag di gumana is ayusin folder names na walang space.
-    ingest_folder(folder_path)
+    
+    BASE_DIR = "/app/Project Dataset"
 
-    folder_path = "./workflows/Project Dataset/Customer Management Department" 
-    ingest_folder(folder_path)
+    departments = [
+        "Business Department",
+        "Customer Management Department",
+        "Enterprise Department",
+        "Marketing Department",
+        "Operations Department"
+    ]
 
-    folder_path = "./workflows/Project Dataset/Enterprise Department" 
-    ingest_folder(folder_path)
+    for dept in departments:
+        full_path = os.path.join(BASE_DIR, dept)
+        ingest_folder(full_path)
 
-    folder_path = "./workflows/Project Dataset/Marketing Department" 
-    ingest_folder(folder_path)
-
-    folder_path = "./workflows/Project Dataset/Operations Department" 
-    ingest_folder(folder_path)
-
-
-# ASSUMES ALL FILES ARE IN ONE FOLDER
-# EDIT THE VARIABLES DATABASE_URL AND folder_path
+    print("\n🎉 =========================================")
+    print("🎉 All ingestion tasks finished.")
+    print("🎉 =========================================")
