@@ -47,7 +47,7 @@ def create_schemas():
     """
     Ensures the 3 main layers exist before we load data.
     """
-    schemas = ["raw_schema", "staging_schema", "star_schema"]
+    schemas = ["raw_schema", "staging1_schema", "staging2_schema", "star_schema"]
     
     try:
         with engine.connect() as conn:
