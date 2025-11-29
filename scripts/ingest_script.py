@@ -1,5 +1,6 @@
 import os
 import re
+import csv
 import pandas as pd
 from sqlalchemy import create_engine, MetaData, Table, Column, inspect, text
 from sqlalchemy.dialects.postgresql import (
@@ -27,15 +28,15 @@ DB_NAME = os.getenv('DB_NAME', 'shopzada_dwh')
 
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-print(f"🔌 Connecting to database at: {DB_HOST}...")
+print(f"Connecting to database at: {DB_HOST}...")
 
 try:
     engine = create_engine(DATABASE_URL)
     connection = engine.connect()
-    print("✅ Connection successful!")
+    print("Connection successful!")
     connection.close()
 except Exception as e:
-    print(f"❌ Connection failed: {e}")
+    print(f"Connection failed: {e}")
     exit(1)
 
 metadata = MetaData()
@@ -56,7 +57,44 @@ def create_schemas():
                 print(f"🏗️  Schema check: {schema} exists.")
             conn.commit()
     except Exception as e:
-        print(f"❌ Failed creating schemas: {e}")
+        print(f"Failed creating schemas: {e}")
+
+# ----------------------------------------------------------
+# CSV LOADER WITH AUTOMATIC DELIMITER DETECTION
+# ----------------------------------------------------------
+def load_csv_with_fallbacks(file_path):
+    """
+    Tries comma → tab → autodetect using csv.Sniffer.
+    """
+
+    # 1. Try comma
+    try:
+        df = pd.read_csv(file_path, delimiter=",")
+        if df.shape[1] > 1:
+            return df
+    except:
+        pass
+
+    # 2. Try tab
+    try:
+        df = pd.read_csv(file_path, delimiter="\t")
+        if df.shape[1] > 1:
+            return df
+    except:
+        pass
+
+    # 3. Automatic detection
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            sample = f.read(2048)
+            dialect = csv.Sniffer().sniff(sample)
+
+        df = pd.read_csv(file_path, delimiter=dialect.delimiter)
+        return df
+    except Exception as e:
+        print(f"Could not detect CSV delimiter for: {file_path}")
+        print(f" Error: {e}")
+        return None
 
 # ----------------------------------------------------------
 # 3. HELPER FUNCTIONS
@@ -64,7 +102,7 @@ def create_schemas():
 def load_file_to_dataframe(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     try:
-        if ext == ".csv": return pd.read_csv(file_path)
+        if ext == ".csv": return load_csv_with_fallbacks(file_path)
         elif ext == ".parquet": return pd.read_parquet(file_path)
         elif ext in [".pkl", ".pickle"]: return pd.read_pickle(file_path)
         elif ext == ".html": return pd.read_html(file_path)[0]
@@ -72,13 +110,28 @@ def load_file_to_dataframe(file_path):
         elif ext == ".xlsx": return pd.read_excel(file_path)
         else: return None
     except Exception as e:
-        print(f"❌ Error reading {file_path}: {e}")
+        print(f"Error reading {file_path}: {e}")
         return None
 
 def extract_table_name(filename):
-    base = os.path.splitext(filename)[0]
-    match = re.split(r"\d", base, maxsplit=1)[0]
-    return match.rstrip("_").lower()
+    """
+    Creates a unique table name per file based on full filename + file extension.
+    Examples:
+        line_item_data_prices1.csv → line_item_data_prices1_csv
+        order_data_20200101-20200701.json → order_data_20200101-20200701_json
+    """
+    base, ext = os.path.splitext(filename)
+
+    base_clean = (
+        base.replace(" ", "_")
+            .replace("-", "_")
+            .lower()
+    )
+
+    ext_clean = ext.replace(".", "").lower()
+
+    # Combine them into a table name
+    return f"{base_clean}_{ext_clean}"
 
 def map_dtype(dtype):
     if pd.api.types.is_integer_dtype(dtype): return INTEGER
@@ -92,20 +145,20 @@ def map_dtype(dtype):
 # ----------------------------------------------------------
 def create_table_if_not_exists(df, table_name):
     inspector = inspect(engine)
-    
-    # Check specifically in raw_schema
+
+    # Check in raw_schema
     if inspector.has_table(table_name, schema="raw_schema"):
-        print(f"   -> Table 'raw_schema.{table_name}' exists. Appending...")
+        print(f"   -> Table 'raw_schema.{table_name}' already exists. Skipping creation.")
         return
 
     print(f"   -> Creating 'raw_schema.{table_name}'...")
+    
     columns = []
     for col_name, dtype in df.dtypes.items():
         clean_col = col_name.replace(" ", "_").lower()
         pg_type = map_dtype(dtype)
         columns.append(Column(clean_col, pg_type))
-    
-    # Force creation in raw_schema
+
     table = Table(table_name, metadata, *columns, schema="raw_schema")
     metadata.create_all(engine)
 
@@ -124,29 +177,33 @@ def load_dataframe_to_postgres(df, table_name):
             chunksize=1000,
             schema="raw_schema"  # <--- CRITICAL: Puts data in the correct folder
         )
-        print(f"   -> ✅ Inserted {len(df)} rows.")
+        print(f"   -> Inserted {len(df)} rows.")
     except Exception as e:
-        print(f"   -> ❌ Failed to insert: {e}")
+        print(f"   -> Failed to insert: {e}")
 
 # ----------------------------------------------------------
 # 6. FILE PROCESSOR
 # ----------------------------------------------------------
 def ingest_file(file_path):
     filename = os.path.basename(file_path)
+
+    # Unique table per file
     table_name = extract_table_name(filename)
 
     print(f"\n📄 Processing: {filename}")
     df = load_file_to_dataframe(file_path)
-    
+
     if df is not None and not df.empty:
-        # Security Filter
+
+        # SECURITY CHECK
         cols_to_drop = [col for col in DROP_COLUMNS if col in df.columns]
         if cols_to_drop:
             df.drop(columns=cols_to_drop, inplace=True)
             print(f"   🛡️ Dropped sensitive columns: {cols_to_drop}")
-        
+
         create_table_if_not_exists(df, table_name)
         load_dataframe_to_postgres(df, table_name)
+
     else:
         print("   -> Skipped (Empty or invalid)")
 
@@ -172,6 +229,6 @@ if __name__ == "__main__":
             for f in files:
                 ingest_file(os.path.join(full_path, f))
         else:
-            print(f"⚠️ Folder not found: {dept}")
+            print(f"Folder not found: {dept}")
 
-    print("\n🎉 All tasks finished.")
+    print("\nAll tasks finished.")
