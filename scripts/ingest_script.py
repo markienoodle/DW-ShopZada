@@ -26,15 +26,20 @@ DB_HOST = os.getenv('DB_HOST', 'db')
 DB_PORT = os.getenv('DB_PORT', '5432')
 DB_NAME = os.getenv('DB_NAME', 'shopzada_dwh')
 
+# Update host if running inside Airflow container (Automatic Detection)
+if os.path.exists('/opt/airflow'):
+    DB_HOST = 'shopzada-postgres-db'
+
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 print(f"Connecting to database at: {DB_HOST}...")
 
 try:
     engine = create_engine(DATABASE_URL)
-    connection = engine.connect()
+    # Test connection
+    with engine.connect() as conn:
+        pass
     print("Connection successful!")
-    connection.close()
 except Exception as e:
     print(f"Connection failed: {e}")
     exit(1)
@@ -42,63 +47,45 @@ except Exception as e:
 metadata = MetaData()
 
 # ----------------------------------------------------------
-# 2. CREATE SCHEMAS (Medallion Architecture)
+# 2. CREATE SCHEMAS (Fixed for all SQLAlchemy versions)
 # ----------------------------------------------------------
 def create_schemas():
     """
     Ensures the 3 main layers exist before we load data.
+    Using engine.begin() handles transaction commits automatically.
     """
     schemas = ["raw_schema", "staging1_schema", "staging2_schema", "star_schema"]
-    
     try:
-        with engine.connect() as conn:
+        # engine.begin() starts a transaction and auto-commits on success
+        with engine.begin() as conn:
             for schema in schemas:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema};"))
                 print(f"🏗️  Schema check: {schema} exists.")
-            conn.commit()
     except Exception as e:
         print(f"Failed creating schemas: {e}")
-
-# ----------------------------------------------------------
-# CSV LOADER WITH AUTOMATIC DELIMITER DETECTION
-# ----------------------------------------------------------
-def load_csv_with_fallbacks(file_path):
-    """
-    Tries comma → tab → autodetect using csv.Sniffer.
-    """
-
-    # 1. Try comma
-    try:
-        df = pd.read_csv(file_path, delimiter=",")
-        if df.shape[1] > 1:
-            return df
-    except:
-        pass
-
-    # 2. Try tab
-    try:
-        df = pd.read_csv(file_path, delimiter="\t")
-        if df.shape[1] > 1:
-            return df
-    except:
-        pass
-
-    # 3. Automatic detection
-    try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            sample = f.read(2048)
-            dialect = csv.Sniffer().sniff(sample)
-
-        df = pd.read_csv(file_path, delimiter=dialect.delimiter)
-        return df
-    except Exception as e:
-        print(f"Could not detect CSV delimiter for: {file_path}")
-        print(f" Error: {e}")
-        return None
+        raise e # Critical error, must stop script if schemas fail
 
 # ----------------------------------------------------------
 # 3. HELPER FUNCTIONS
 # ----------------------------------------------------------
+def load_csv_with_fallbacks(file_path):
+    """ Tries comma -> tab -> autodetect """
+    try:
+        df = pd.read_csv(file_path, delimiter=",")
+        if df.shape[1] > 1: return df
+    except: pass
+    try:
+        df = pd.read_csv(file_path, delimiter="\t")
+        if df.shape[1] > 1: return df
+    except: pass
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            sample = f.read(2048)
+            dialect = csv.Sniffer().sniff(sample)
+        df = pd.read_csv(file_path, delimiter=dialect.delimiter)
+        return df
+    except: return None
+
 def load_file_to_dataframe(file_path):
     ext = os.path.splitext(file_path)[1].lower()
     try:
@@ -115,22 +102,11 @@ def load_file_to_dataframe(file_path):
 
 def extract_table_name(filename):
     """
-    Creates a unique table name per file based on full filename + file extension.
-    Examples:
-        line_item_data_prices1.csv → line_item_data_prices1_csv
-        order_data_20200101-20200701.json → order_data_20200101-20200701_json
+    Creates a unique table name per file: 'file.csv' -> 'file_csv'
     """
     base, ext = os.path.splitext(filename)
-
-    base_clean = (
-        base.replace(" ", "_")
-            .replace("-", "_")
-            .lower()
-    )
-
+    base_clean = base.replace(" ", "_").replace("-", "_").lower()
     ext_clean = ext.replace(".", "").lower()
-
-    # Combine them into a table name
     return f"{base_clean}_{ext_clean}"
 
 def map_dtype(dtype):
@@ -144,22 +120,18 @@ def map_dtype(dtype):
 # ----------------------------------------------------------
 def create_table_if_not_exists(df, table_name):
     inspector = inspect(engine)
-
-    # Check in raw_schema
     if inspector.has_table(table_name, schema="raw_schema"):
         print(f"   -> Table 'raw_schema.{table_name}' already exists. Skipping creation.")
         return
 
     print(f"   -> Creating 'raw_schema.{table_name}'...")
-    
     columns = []
     for col_name, dtype in df.dtypes.items():
         clean_col = col_name.replace(" ", "_").lower()
-        pg_type = map_dtype(dtype)
-        columns.append(Column(clean_col, pg_type))
+        columns.append(Column(clean_col, map_dtype(dtype)))
 
     table = Table(table_name, metadata, *columns, schema="raw_schema")
-    metadata.create_all(engine)
+    table.create(engine)
 
 # ----------------------------------------------------------
 # 5. LOGIC: Insert Data into 'raw_schema'
@@ -170,31 +142,28 @@ def load_dataframe_to_postgres(df, table_name):
         df.to_sql(
             table_name,
             engine,
-            if_exists="append",
+            if_exists="replace", # <--- Wipes old table and inserts fresh
             index=False,
             method='multi',
             chunksize=1000,
-            schema="raw_schema"  # <--- CRITICAL: Puts data in the correct folder
+            schema="raw_schema"
         )
         print(f"   -> Inserted {len(df)} rows.")
     except Exception as e:
-        print(f"   -> Failed to insert: {e}")
+        print(f"   -> ❌ FAILED to insert {table_name}: {e}")
+        # Note: I removed 'raise e' so the script keeps running for other files!
 
 # ----------------------------------------------------------
 # 6. FILE PROCESSOR
 # ----------------------------------------------------------
 def ingest_file(file_path):
     filename = os.path.basename(file_path)
-
-    # Unique table per file
     table_name = extract_table_name(filename)
 
     print(f"\n📄 Processing: {filename}")
     df = load_file_to_dataframe(file_path)
 
     if df is not None and not df.empty:
-
-        # SECURITY CHECK
         cols_to_drop = [col for col in DROP_COLUMNS if col in df.columns]
         if cols_to_drop:
             df.drop(columns=cols_to_drop, inplace=True)
@@ -202,7 +171,6 @@ def ingest_file(file_path):
 
         create_table_if_not_exists(df, table_name)
         load_dataframe_to_postgres(df, table_name)
-
     else:
         print("   -> Skipped (Empty or invalid)")
 
@@ -210,15 +178,28 @@ def ingest_file(file_path):
 # 7. MAIN EXECUTION
 # ----------------------------------------------------------
 if __name__ == "__main__":
-    # 1. Create the architecture first
+    # 1. Create the architecture
     create_schemas()
 
-    # 2. Ingest the files
-    BASE_DIR = "/app/Project Dataset"
+    # 2. Detect the correct Base Directory
+    # This logic fixes the "Folder not found" errors
+    if os.path.exists("/opt/airflow/Project Dataset"):
+        BASE_DIR = "/opt/airflow/Project Dataset"
+        print("🌍 Environment detected: Airflow Container")
+    elif os.path.exists("/app/Project Dataset"):
+        BASE_DIR = "/app/Project Dataset"
+        print("🌍 Environment detected: ETL App Container")
+    else:
+        print("❌ CRITICAL ERROR: Could not find 'Project Dataset' folder.")
+        print("Checked /opt/airflow/Project Dataset and /app/Project Dataset.")
+        exit(1)
+
     departments = [
         "Business Department", "Customer Management Department", 
         "Enterprise Department", "Marketing Department", "Operations Department"
     ]
+
+    files_found = 0
 
     for dept in departments:
         full_path = os.path.join(BASE_DIR, dept)
@@ -227,7 +208,12 @@ if __name__ == "__main__":
             files = os.listdir(full_path)
             for f in files:
                 ingest_file(os.path.join(full_path, f))
+                files_found += 1
         else:
-            print(f"Folder not found: {dept}")
+            print(f"⚠️ Folder not found: {dept}")
 
-    print("\nAll tasks finished.")
+    if files_found == 0:
+        print("\n❌ NO FILES WERE INGESTED. Please check your folder structure.")
+        exit(1)
+    
+    print("\n✅ All tasks finished successfully.")

@@ -1,0 +1,3 @@
+workflows/logs/
+workflows/dags/__pycache__/
+workflows/airflow.env
