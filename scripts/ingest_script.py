@@ -1,4 +1,5 @@
 import os
+import io
 import re
 import csv
 import pandas as pd
@@ -137,21 +138,50 @@ def create_table_if_not_exists(df, table_name):
 # 5. LOGIC: Insert Data into 'raw_schema'
 # ----------------------------------------------------------
 def load_dataframe_to_postgres(df, table_name):
-    df.columns = [c.replace(" ", "_").lower() for c in df.columns]
+    
+    # --- SANITIZE COLUMN NAMES ---
+    def sanitize(col):
+        col = col.lower()                       # lowercase
+        col = re.sub(r"[^\w]", "_", col)         # replace non-alphanumeric with _
+        col = re.sub(r"_+", "_", col)            # collapse multiple _
+        col = col.strip("_")                    # remove underscores at ends
+        return col
+
+    df.columns = [sanitize(c) for c in df.columns]
+
+    # Convert dataframe to CSV in memory
+    csv_data = df.to_csv(index=False)
+
+    conn = engine.raw_connection()
+    cur = conn.cursor()
+
     try:
-        df.to_sql(
-            table_name,
-            engine,
-            if_exists="replace", # <--- Wipes old table and inserts fresh
-            index=False,
-            method='multi',
-            chunksize=1000,
-            schema="raw_schema"
-        )
-        print(f"   -> Inserted {len(df)} rows.")
+        # Drop old table
+        cur.execute(f"DROP TABLE IF EXISTS raw_schema.{table_name};")
+
+        # Create table manually (no SQLAlchemy)
+        columns_sql = ", ".join([f"{col} TEXT" for col in df.columns])
+        cur.execute(f"CREATE TABLE raw_schema.{table_name} ({columns_sql});")
+
+        # COPY (fastest loader)
+        copy_sql = f"""
+            COPY raw_schema.{table_name} ({', '.join(df.columns)})
+            FROM STDIN WITH CSV HEADER;
+        """
+
+        cur.copy_expert(copy_sql, io.StringIO(csv_data))
+        conn.commit()
+
+        print(f"✅ COPY loaded {len(df)} rows into raw_schema.{table_name}")
+
     except Exception as e:
-        print(f"   -> ❌ FAILED to insert {table_name}: {e}")
-        # Note: I removed 'raise e' so the script keeps running for other files!
+        conn.rollback()
+        print(f"   ❌ COPY failed for {table_name}: {e}")
+
+    finally:
+        cur.close()
+        conn.close()
+
 
 # ----------------------------------------------------------
 # 6. FILE PROCESSOR

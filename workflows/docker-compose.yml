@@ -10,6 +10,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-metadata-db/airflow
     AIRFLOW_VAR_SHOPZADA_DB_CONN: postgresql+psycopg2://shopzada_admin:password123@db/shopzada_dwh
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+
   volumes:
     # 1. DAGS/LOGS/PLUGINS (Moved INSIDE workflows folder to keep root clean)
     - ./dags:/opt/airflow/dags
@@ -90,13 +91,16 @@ services:
       - POSTGRES_USER=airflow
       - POSTGRES_PASSWORD=airflow
       - POSTGRES_DB=airflow
+
+    volumes:
+      - airflow_metadata_data:/var/lib/postgresql/data
     networks:
       - shopzada-network
 
   airflow-init:
     <<: *airflow-common
     container_name: airflow-init
-    command: version
+    command: db init
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: 'true'
@@ -127,7 +131,7 @@ services:
 
 volumes:
   postgres_data:
-
+  airflow_metadata_data:
 
 networks:
   shopzada-network:
