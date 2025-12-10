@@ -3,10 +3,8 @@ import io
 import re
 import csv
 import pandas as pd
-from sqlalchemy import create_engine, MetaData, Table, Column, inspect, text
-from sqlalchemy.dialects.postgresql import (
-    VARCHAR, INTEGER, FLOAT, BOOLEAN, DATE, TIMESTAMP
-)
+from sqlalchemy import create_engine, MetaData, text
+
 
 # ----------------------------------------------------------
 # CONFIGURATION: SECURITY & SAFETY
@@ -110,79 +108,54 @@ def extract_table_name(filename):
     ext_clean = ext.replace(".", "").lower()
     return f"{base_clean}_{ext_clean}"
 
-def map_dtype(dtype):
-    if pd.api.types.is_integer_dtype(dtype): return INTEGER
-    elif pd.api.types.is_float_dtype(dtype): return FLOAT
-    elif pd.api.types.is_bool_dtype(dtype): return BOOLEAN
-    else: return VARCHAR
-
 # ----------------------------------------------------------
-# 4. LOGIC: Create Table in 'raw_schema'
-# ----------------------------------------------------------
-def create_table_if_not_exists(df, table_name):
-    inspector = inspect(engine)
-    if inspector.has_table(table_name, schema="raw_schema"):
-        print(f"   -> Table 'raw_schema.{table_name}' already exists. Skipping creation.")
-        return
-
-    print(f"   -> Creating 'raw_schema.{table_name}'...")
-    columns = []
-    for col_name, dtype in df.dtypes.items():
-        clean_col = col_name.replace(" ", "_").lower()
-        columns.append(Column(clean_col, map_dtype(dtype)))
-
-    table = Table(table_name, metadata, *columns, schema="raw_schema")
-    table.create(engine)
-
-# ----------------------------------------------------------
-# 5. LOGIC: Insert Data into 'raw_schema'
+# 4. LOGIC: Create Tables and Insert Data into 'raw_schema'
 # ----------------------------------------------------------
 def load_dataframe_to_postgres(df, table_name):
-    
+
     # --- SANITIZE COLUMN NAMES ---
     def sanitize(col):
-        col = col.lower()                       # lowercase
-        col = re.sub(r"[^\w]", "_", col)         # replace non-alphanumeric with _
-        col = re.sub(r"_+", "_", col)            # collapse multiple _
-        col = col.strip("_")                    # remove underscores at ends
+        col = col.lower()
+        col = re.sub(r"[^\w]", "_", col)
+        col = re.sub(r"_+", "_", col)
+        col = col.strip("_")
         return col
 
     df.columns = [sanitize(c) for c in df.columns]
 
-    # Convert dataframe to CSV in memory
     csv_data = df.to_csv(index=False)
 
     conn = engine.raw_connection()
     cur = conn.cursor()
 
     try:
-        # Drop old table
-        cur.execute(f"DROP TABLE IF EXISTS raw_schema.{table_name};")
-
-        # Create table manually (no SQLAlchemy)
+        # 1. Create table IF NOT EXISTS (no delete)
         columns_sql = ", ".join([f"{col} TEXT" for col in df.columns])
-        cur.execute(f"CREATE TABLE raw_schema.{table_name} ({columns_sql});")
+        create_sql = f"""
+            CREATE TABLE IF NOT EXISTS raw_schema.{table_name} (
+                {columns_sql}
+            );
+        """
+        cur.execute(create_sql)
 
-        # COPY (fastest loader)
+        # 2. Append using COPY
         copy_sql = f"""
             COPY raw_schema.{table_name} ({', '.join(df.columns)})
             FROM STDIN WITH CSV HEADER;
         """
-
         cur.copy_expert(copy_sql, io.StringIO(csv_data))
-        conn.commit()
 
-        print(f"✅ COPY loaded {len(df)} rows into raw_schema.{table_name}")
+        conn.commit()
+        print(f"✅ Appended {len(df)} rows into raw_schema.{table_name}")
 
     except Exception as e:
         conn.rollback()
-        print(f"   ❌ COPY failed for {table_name}: {e}")
+        print(f"❌ COPY failed for {table_name}: {e}")
 
     finally:
         cur.close()
         conn.close()
-
-
+        
 # ----------------------------------------------------------
 # 6. FILE PROCESSOR
 # ----------------------------------------------------------
@@ -199,7 +172,6 @@ def ingest_file(file_path):
             df.drop(columns=cols_to_drop, inplace=True)
             print(f"   🛡️ Dropped sensitive columns: {cols_to_drop}")
 
-        create_table_if_not_exists(df, table_name)
         load_dataframe_to_postgres(df, table_name)
     else:
         print("   -> Skipped (Empty or invalid)")
