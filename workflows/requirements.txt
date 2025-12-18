@@ -8,7 +8,10 @@ lxml        # For HTML scraping (.html)
 pyarrow     # For Parquet files (.parquet)
 
 # --- For Connecting to the Database (Week 3/4) ---
-sqlalchemy
+sqlalchemy<2.0
 psycopg2-binary
 
 # Subject to change 
+
+# --- For Loading Address ---
+geopy==2.4.1
