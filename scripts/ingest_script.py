@@ -55,14 +55,13 @@ def create_schemas():
     """
     schemas = ["raw_schema", "staging1_schema", "staging2_schema", "star_schema"]
     try:
-        # engine.begin() starts a transaction and auto-commits on success
         with engine.begin() as conn:
             for schema in schemas:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema};"))
                 print(f"🏗️  Schema check: {schema} exists.")
     except Exception as e:
         print(f"Failed creating schemas: {e}")
-        raise e # Critical error, must stop script if schemas fail
+        raise e
 
 # ----------------------------------------------------------
 # 3. HELPER FUNCTIONS
@@ -86,23 +85,45 @@ def load_csv_with_fallbacks(file_path):
     except: return None
 
 def load_file_to_dataframe(file_path):
+    """
+    Loads any supported file into a DataFrame.
+    Converts index to a column named 'unnamed_0' if necessary.
+    """
     ext = os.path.splitext(file_path)[1].lower()
     try:
-        if ext == ".csv": return load_csv_with_fallbacks(file_path)
-        elif ext == ".parquet": return pd.read_parquet(file_path)
-        elif ext in [".pkl", ".pickle"]: return pd.read_pickle(file_path)
-        elif ext == ".html": return pd.read_html(file_path)[0]
-        elif ext == ".json": return pd.read_json(file_path)
-        elif ext == ".xlsx": return pd.read_excel(file_path)
-        else: return None
+        if ext == ".csv":
+            df = load_csv_with_fallbacks(file_path)
+        elif ext == ".parquet":
+            df = pd.read_parquet(file_path)
+        elif ext in [".pkl", ".pickle"]:
+            df = pd.read_pickle(file_path)
+        elif ext == ".html":
+            df = pd.read_html(file_path)[0]
+        elif ext == ".json":
+            df = pd.read_json(file_path)
+        elif ext == ".xlsx":
+            df = pd.read_excel(file_path)
+        else:
+            return None
+
+        if df is not None:
+            # Convert index to column if not default RangeIndex
+            if not isinstance(df.index, pd.RangeIndex):
+                df.reset_index(inplace=True)
+                if 'index' in df.columns:
+                    df.rename(columns={'index': 'unnamed_0'}, inplace=True)
+
+            # Normalize any existing Unnamed: 0
+            unnamed_cols = [c for c in df.columns if re.match(r'^Unnamed: 0$', c, re.IGNORECASE)]
+            for col in unnamed_cols:
+                df.rename(columns={col: 'unnamed_0'}, inplace=True)
+
+        return df
     except Exception as e:
         print(f"Error reading {file_path}: {e}")
         return None
 
 def extract_table_name(filename):
-    """
-    Creates a unique table name per file: 'file.csv' -> 'file_csv'
-    """
     base, ext = os.path.splitext(filename)
     base_clean = base.replace(" ", "_").replace("-", "_").lower()
     ext_clean = ext.replace(".", "").lower()
@@ -112,7 +133,6 @@ def extract_table_name(filename):
 # 4. LOGIC: Create Tables and Insert Data into 'raw_schema'
 # ----------------------------------------------------------
 def load_dataframe_to_postgres(df, table_name):
-
     # --- SANITIZE COLUMN NAMES ---
     def sanitize(col):
         col = col.lower()
@@ -129,7 +149,7 @@ def load_dataframe_to_postgres(df, table_name):
     cur = conn.cursor()
 
     try:
-        # 1. Create table IF NOT EXISTS (no delete)
+        # 1. Create table IF NOT EXISTS
         columns_sql = ", ".join([f"{col} TEXT" for col in df.columns])
         create_sql = f"""
             CREATE TABLE IF NOT EXISTS raw_schema.{table_name} (
@@ -155,7 +175,7 @@ def load_dataframe_to_postgres(df, table_name):
     finally:
         cur.close()
         conn.close()
-        
+
 # ----------------------------------------------------------
 # 6. FILE PROCESSOR
 # ----------------------------------------------------------
@@ -167,6 +187,7 @@ def ingest_file(file_path):
     df = load_file_to_dataframe(file_path)
 
     if df is not None and not df.empty:
+        # Drop sensitive columns
         cols_to_drop = [col for col in DROP_COLUMNS if col in df.columns]
         if cols_to_drop:
             df.drop(columns=cols_to_drop, inplace=True)
@@ -184,7 +205,6 @@ if __name__ == "__main__":
     create_schemas()
 
     # 2. Detect the correct Base Directory
-    # This logic fixes the "Folder not found" errors
     if os.path.exists("/opt/airflow/Project Dataset"):
         BASE_DIR = "/opt/airflow/Project Dataset"
         print("🌍 Environment detected: Airflow Container")

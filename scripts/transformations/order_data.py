@@ -33,24 +33,81 @@ SOURCE_TABLES = [
 STAGING_SCHEMA = "staging1_schema"
 STAGING_TABLE = "order_data_cleaned"
 
-DROP_COLUMNS = [0]
-
 REQUIRED_COLUMNS = [
     "order_id",
     "user_id",
     "estimated_arrival",
-    "transaction_date"
+    "transaction_date",
+    "merchant_id",
+    "staff_id",
+    "delay_in_days"
 ]
 
-# =========================================================
-#          DATA TYPE MAPPING (EXPLICIT SQL TYPES)
-# =========================================================
 DTYPE_MAPPING = {
-    "order_id": "VARCHAR(36)",        # UUID-like
-    "user_id": "VARCHAR(9)",         # alphanumeric
-    "estimated_arrival": "INTEGER",   # numeric
-    "transaction_date": "DATE"        # date only
+    "order_id": "VARCHAR(36)",
+    "user_id": "VARCHAR(9)",
+    "estimated_arrival": "INTEGER",
+    "transaction_date": "DATE",
+    "merchant_id": "VARCHAR(13)",
+    "staff_id": "VARCHAR(12)",
+    "delay_in_days": "INTEGER"
 }
+
+# =========================================================
+#                TERMINAL CHECKS
+# =========================================================
+def check_merge(df, table_name, merge_col):
+    print(f"\n=== After merging table: {table_name} on '{merge_col}' ===")
+    print(f"Total rows: {len(df)}")
+    duplicates = df[df.duplicated(subset=[merge_col], keep=False)]
+    print(f"Duplicate rows on {merge_col}: {len(duplicates)}")
+    missing = df[merge_col].isna().sum()
+    print(f"Rows with NULL in {merge_col}: {missing}")
+    null_counts = df.isna().sum()
+    if null_counts.any():
+        print("Missing values per column:")
+        print(null_counts[null_counts > 0])
+
+# =========================================================
+#                MERGE FUNCTIONS
+# =========================================================
+def merge_source_tables(merge_column="unnamed_0"):
+    """Merge all SOURCE_TABLES together"""
+    engine = create_engine(DB_URI)
+    merged_df = None
+    for table in SOURCE_TABLES:
+        print(f"Loading {table}")
+        df = pd.read_sql(f"SELECT * FROM {table}", engine)
+        if merged_df is None:
+            merged_df = df
+        else:
+            merged_df = pd.merge(
+                merged_df,
+                df,
+                how="outer",  # preserve all rows
+                on=merge_column,
+                suffixes=("", "_dup")
+            )
+            merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith("_dup")]
+    print(f"Completed merge of SOURCE_TABLES: {len(merged_df)} rows")
+    return merged_df
+
+def merge_additional_tables(merged_df, additional_tables):
+    """Incrementally merge additional tables onto merged_df"""
+    engine = create_engine(DB_URI)
+    for table_name, join_col in additional_tables:
+        print(f"\nMerging additional table: {table_name} on {join_col}")
+        df = pd.read_sql(f"SELECT * FROM {table_name}", engine)
+        merged_df = pd.merge(
+            merged_df,
+            df,
+            how="left",
+            on=join_col,
+            suffixes=("", "_new")
+        )
+        merged_df = merged_df.loc[:, ~merged_df.columns.str.endswith("_new")]
+        check_merge(merged_df, table_name, join_col)
+    return merged_df
 
 # =========================================================
 #                   DATA CLEANING
@@ -65,11 +122,9 @@ def clean_columns(df):
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    # String normalization
     df["order_id"] = df["order_id"].astype(str)
     df["user_id"] = df["user_id"].astype(str)
 
-    # Convert "9days" → 9
     df["estimated_arrival"] = (
         df["estimated_arrival"]
         .astype(str)
@@ -77,34 +132,34 @@ def clean_columns(df):
         .astype("Int64")
     )
 
-    # Convert to DATE
+    df["delay_in_days"] = (
+        df["delay_in_days"]
+        .astype(str)
+        .str.extract(r"(\d+)", expand=False)
+        .astype("Int64")
+    )
+
     df["transaction_date"] = pd.to_datetime(
         df["transaction_date"], errors="coerce"
     ).dt.date
 
-    # Warnings
     if df["estimated_arrival"].isna().any():
         print("Warning: Some estimated_arrival values had no digits.")
     if df["transaction_date"].isna().any():
         print("Warning: Some transaction_date values could not be parsed.")
-
     return df
 
 # =========================================================
-#                COPY LOADING FUNCTION
+#                WRITE TO STAGING
 # =========================================================
 def write_to_staging(df):
     engine = create_engine(DB_URI)
     conn = engine.raw_connection()
     cursor = conn.cursor()
 
-    # Ensure schema exists
     cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {STAGING_SCHEMA};")
-
-    # Reset table
     cursor.execute(f"DROP TABLE IF EXISTS {STAGING_SCHEMA}.{STAGING_TABLE};")
 
-    # Build CREATE TABLE DDL using explicit VARCHAR/INTEGER/DATE
     col_defs = [f"{col} {dtype}" for col, dtype in DTYPE_MAPPING.items()]
     create_stmt = f"""
         CREATE TABLE {STAGING_SCHEMA}.{STAGING_TABLE} (
@@ -113,12 +168,13 @@ def write_to_staging(df):
     """
     cursor.execute(create_stmt)
 
-    # Convert DF → CSV buffer for COPY
+    # Ensure column order
+    df = df[[col for col in DTYPE_MAPPING.keys()]]
+
     buffer = io.StringIO()
     df.to_csv(buffer, index=False, header=False)
     buffer.seek(0)
 
-    # COPY into Postgres
     cursor.copy_expert(
         f"""
         COPY {STAGING_SCHEMA}.{STAGING_TABLE}
@@ -131,7 +187,6 @@ def write_to_staging(df):
     conn.commit()
     cursor.close()
     conn.close()
-
     print(f"Loaded {len(df)} rows into {STAGING_SCHEMA}.{STAGING_TABLE} via COPY.")
 
 # =========================================================
@@ -140,20 +195,23 @@ def write_to_staging(df):
 def main():
     engine = create_engine(DB_URI)
 
-    frames = []
+    # Step 1: Merge source tables
+    merged_df = merge_source_tables(merge_column="unnamed_0")
 
-    for table in SOURCE_TABLES:
-        print(f"Loading: {table}")
-        df = pd.read_sql(f"SELECT * FROM {table}", engine)
-        df = clean_columns(remove_unnamed(df))
-        frames.append(df)
+    # Step 2: Merge additional tables
+    additional_tables = [
+        ("raw_schema.order_delays_html", "unnamed_0"),
+        ("raw_schema.order_with_merchant_data1_parquet", "order_id"),
+        ("raw_schema.order_with_merchant_data2_parquet", "order_id"),
+        ("raw_schema.order_with_merchant_data3_csv", "order_id")
+    ]
+    merged_df = merge_additional_tables(merged_df, additional_tables)
 
-    final_df = pd.concat(frames, ignore_index=True)
-
+    # Step 3: Clean and write to staging
+    final_df = clean_columns(remove_unnamed(merged_df))
     write_to_staging(final_df)
 
-    print("Order data ELT pipeline completed.")
-
+    print("Pipeline completed successfully.")
 
 if __name__ == "__main__":
     main()
