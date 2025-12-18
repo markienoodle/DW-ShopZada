@@ -4,9 +4,9 @@ from datetime import datetime, timedelta
 
 default_args = {
     'owner': 'shopzada',
-    'retries': 0, # Don't retry immediately if verification fails; we want to see the error
+    'retries': 3,
     'retry_delay': timedelta(minutes=5),
-    'start_date': datetime(2023, 1, 1),
+    'start_date': datetime(2023, 1, 1)
 }
 
 with DAG(
@@ -26,14 +26,17 @@ with DAG(
     # Task 2: Run Ingestion
     run_ingest = BashOperator(
         task_id='run_ingest_script',
-        bash_command='python /opt/airflow/scripts/ingest_script.py'
+        bash_command='python /opt/airflow/scripts/ingest_script.py',
+        retries=3,  # Try to load data 3 times
+        retry_delay=timedelta(minutes=5) # Wait 5 minutes before retrying
     )
 
     # Task 3: Verify Data (The New Step)
     verify_data = BashOperator(
         task_id='verify_data_integrity',
-        bash_command='python /opt/airflow/scripts/verify_script.py'
+        bash_command='python /opt/airflow/scripts/verify_script.py',
+        retries=0
     )
 
-    # Set the order: Install -> Ingest -> Verify
+    # Set the order: Install -> Ingest -> Verifyxa
     install_deps >> run_ingest >> verify_data
