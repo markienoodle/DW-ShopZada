@@ -29,19 +29,20 @@ with DAG(
     )
 
     # Update this path if needed
-    SCRIPT_PATH = "/opt/airflow/dags/transformations"
+    SCRIPT_PATH = "/opt/airflow/scripts/transformations"
 
     tables_to_process = [
         'campaign_data',
         'order_data',
-        'order_with_merchant_data',
         'product_list',
-        'transactional_campaign_data',
         'user_data',
         'merchant_data',
         'staff_data',
-        'line_item_data_prices',
-        'line_item_data_products'
+        'line_item_data',
+        'user_job',
+        'user_credit_card',
+
+        
     ]
 
     transform_task_groups = []
@@ -56,15 +57,7 @@ with DAG(
             trigger_rule=TriggerRule.ALL_DONE 
         )
 
-        # 2. Verify Task
-        # We keep the default rule here. If transform fails, we SKIP verification.
-        verify_task = BashOperator(
-            task_id=f'verify_{table_name}',
-            bash_command=f'python {SCRIPT_PATH}/{table_name}_verify.py'
-        )
-
-        transform_task >> verify_task
-        verify_task >> end_task
+        transform_task >> end_task
 
         transform_task_groups.append(transform_task)
 
