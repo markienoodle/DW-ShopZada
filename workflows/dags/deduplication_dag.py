@@ -13,48 +13,50 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+# Define the connection ID here. 
+# 'postgres_default' is the standard ID Airflow uses for Postgres.
+# Make sure your 'staging1_schema' exists in the database this connection points to.
+DB_CONNECTION_ID = 'airflow_db'
+
 with DAG(
     'deduplication_pipeline',
     default_args=default_args,
-    description='Runs deduplication scripts simultaneously',
-    schedule_interval='@daily', # Adjust schedule as needed
+    description='Runs deduplication scripts simultaneously on Postgres',
+    schedule_interval='@daily',
     start_date=datetime(2023, 1, 1),
     catchup=False,
-    # IMPORTANT: Point this to where your 'scripts' folder lives in your Airflow environment
+    # Ensure this path matches where your SQL files are located
     template_searchpath=['/opt/airflow/scripts/deduplications'] 
 ) as dag:
 
-    # 1. Create Start and End markers (Good practice for visualization)
+    # 1. Create Start and End markers
     start_task = EmptyOperator(task_id='start')
     end_task = EmptyOperator(task_id='end')
 
-    # 2. Define the SQL tasks
-    # We use the filenames you provided. Airflow will look for them in the template_searchpath defined above.
-    
+    # 2. Define the SQL tasks using the Postgres Connection
     dedup_campaign = PostgresOperator(
         task_id='dedup_campaign',
-        postgres_conn_id='your_db_connection_id', # Change this to your connection ID
+        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
         sql='campaign_data_dedup.sql'
     )
 
     dedup_line_item = PostgresOperator(
         task_id='dedup_line_item',
-        postgres_conn_id='your_db_connection_id',
+        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
         sql='line_item_data_dedup.sql'
     )
 
     dedup_order = PostgresOperator(
         task_id='dedup_order',
-        postgres_conn_id='your_db_connection_id',
+        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
         sql='order_data_dedup.sql'
     )
 
     dedup_product = PostgresOperator(
         task_id='dedup_product',
-        postgres_conn_id='your_db_connection_id',
+        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
         sql='product_list_dedup.sql'
     )
 
     # 3. Set Dependencies
-    # By putting the tasks in a list [], Airflow knows to run them in parallel
     start_task >> [dedup_campaign, dedup_line_item, dedup_order, dedup_product] >> end_task
