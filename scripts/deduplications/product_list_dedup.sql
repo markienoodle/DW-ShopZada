@@ -1,17 +1,17 @@
--- 1) Create target staging2 table (run once)
-CREATE SCHEMA IF NOT EXISTS staging2_schema;
+-- 1) Create target staging1 table (run once)
+CREATE SCHEMA IF NOT EXISTS staging1_schema;
 
-CREATE TABLE IF NOT EXISTS staging2_schema.product_list_stg2 (
+CREATE TABLE IF NOT EXISTS staging1_schema.product_list_deduped (
     product_id    VARCHAR(20),
     product_name  VARCHAR(255),
     product_type  VARCHAR(255),
     price         NUMERIC(10,2)
 );
 
--- 2) For each load: clear staging2 table
-TRUNCATE TABLE staging2_schema.product_list_stg2;
+-- 2) For each load: clear staging1 table
+TRUNCATE TABLE staging1_schema.product_list_deduped;
 
--- 3) Deduplicate from staging1 into staging2
+-- 3) Deduplicate from staging1 into staging1
 WITH ranked AS (
     SELECT
         r.product_id,
@@ -38,7 +38,7 @@ grouped AS (
     FROM ranked
     GROUP BY product_id, ingested_at
 )
-INSERT INTO staging2_schema.product_list_stg2 (
+INSERT INTO staging1_schema.product_list_deduped (
     product_id,
     product_name,
     product_type,

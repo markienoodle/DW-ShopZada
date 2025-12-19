@@ -1,17 +1,16 @@
--- 1) Create target staging2 table (run once)
-CREATE SCHEMA IF NOT EXISTS staging2_schema;
+-- 1) Create target staging1 table (run once)
 
-CREATE TABLE IF NOT EXISTS staging2_schema.campaign_data_stg2 (
+CREATE TABLE IF NOT EXISTS staging1_schema.campaign_data_deduped (
     campaign_id          VARCHAR(13),
     campaign_name        VARCHAR(60),
     campaign_description VARCHAR(150),
     discount             NUMERIC(5, 4)
 );
 
--- 2) For each load: clear staging2 table
-TRUNCATE TABLE staging2_schema.campaign_data_stg2;
+-- 2) For each load: clear staging1 table
+TRUNCATE TABLE staging1_schema.campaign_data_deduped;
 
--- 3) Deduplicate from staging1 into staging2
+-- 3) Deduplicate from staging1 into staging1
 WITH ranked AS (
     SELECT
         r.campaign_id,
@@ -38,7 +37,7 @@ grouped AS (
     FROM ranked
     GROUP BY campaign_id, ingested_at
 )
-INSERT INTO staging2_schema.campaign_data_stg2 (
+INSERT INTO staging1_schema.campaign_data_deduped (
     campaign_id,
     campaign_name,
     campaign_description,

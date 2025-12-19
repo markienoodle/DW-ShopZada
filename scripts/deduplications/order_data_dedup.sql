@@ -1,7 +1,7 @@
--- 1) Create target staging2 table (run once)
-CREATE SCHEMA IF NOT EXISTS staging2_schema;
+-- 1) Create target staging1 table (run once)
+CREATE SCHEMA IF NOT EXISTS staging1_schema;
 
-CREATE TABLE IF NOT EXISTS staging2_schema.order_data_stg2 (
+CREATE TABLE IF NOT EXISTS staging1_schema.order_data_deduped (
     order_id          VARCHAR(36),
     campaign_id       VARCHAR(13),
     user_id           VARCHAR(9),
@@ -13,10 +13,10 @@ CREATE TABLE IF NOT EXISTS staging2_schema.order_data_stg2 (
     availed           BOOLEAN
 );
 
--- 2) For each load: clear staging2 table
-TRUNCATE TABLE staging2_schema.order_data_stg2;
+-- 2) For each load: clear staging1 table
+TRUNCATE TABLE staging1_schema.order_data_deduped;
 
--- 3) Deduplicate from staging1 into staging2
+-- 3) Deduplicate from staging1 into staging1
 WITH ranked AS (
     SELECT
         r.order_id,
@@ -38,7 +38,7 @@ WITH ranked AS (
         COUNT(*) OVER (
             PARTITION BY r.order_id, r.ingested_at
         ) AS cnt_same_ts
-    FROM staging1_schema.order_data_cleaned_raw r
+    FROM staging1_schema.order_data_cleaned r
 ),
 grouped AS (
     -- at each (order_id, latest ingested_at), check if business fields conflict
@@ -60,7 +60,7 @@ grouped AS (
     FROM ranked
     GROUP BY order_id, ingested_at
 )
-INSERT INTO staging2_schema.order_data_stg2 (
+INSERT INTO staging1_schema.order_data_deduped (
     order_id,
     campaign_id,
     user_id,

@@ -49,7 +49,7 @@ REQUIRED_COLUMNS = [
 # =========================================================
 DTYPE_MAPPING = {
     "staff_id": "VARCHAR(12)",
-    "name": "VARCHAR(50)",
+    "name": "VARCHAR(40)",
     "job_level": "VARCHAR(20)",
     "street": "VARCHAR(40)",
     "state": "VARCHAR(27)",
