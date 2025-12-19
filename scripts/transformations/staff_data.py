@@ -56,7 +56,8 @@ DTYPE_MAPPING = {
     "city": "VARCHAR(20)",
     "country": "VARCHAR(52)",
     "contact_number": "VARCHAR(20)",
-    "creation_date": "DATE"
+    "creation_date": "DATE",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================

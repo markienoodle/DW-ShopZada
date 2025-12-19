@@ -54,7 +54,8 @@ DTYPE_MAPPING = {
     "state": "VARCHAR(27)",
     "city": "VARCHAR(20)",
     "country": "VARCHAR(52)",
-    "contact_number": "VARCHAR(20)"
+    "contact_number": "VARCHAR(20)",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================

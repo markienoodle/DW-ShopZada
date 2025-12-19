@@ -42,7 +42,9 @@ DTYPE_MAPPING = {
     "campaign_id": "VARCHAR(13)",
     "campaign_name": "VARCHAR(60)",
     "campaign_description": "VARCHAR(150)",
-    "discount": "NUMERIC(5, 4)"
+    "discount": "NUMERIC(5, 4)",
+    "ingested_at": "TIMESTAMP"
+    
 }
 
 # =========================================================

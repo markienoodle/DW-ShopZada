@@ -55,7 +55,8 @@ DTYPE_MAPPING = {
     "transaction_date": "DATE",
     "estimated_arrival": "INTEGER",
     "delay_in_days": "INTEGER",
-    "availed": "BOOLEAN"
+    "availed": "BOOLEAN",
+    "ingested_at": "TIMESTAMP"
 }
 # =========================================================
 #                TERMINAL CHECKS

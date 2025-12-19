@@ -55,7 +55,8 @@ DTYPE_MAPPING = {
     "birthdate": "TIMESTAMP",
     "gender": "VARCHAR(6)",
     "device_address": "VARCHAR(17)",
-    "user_type": "VARCHAR(8)" 
+    "user_type": "VARCHAR(8)",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================

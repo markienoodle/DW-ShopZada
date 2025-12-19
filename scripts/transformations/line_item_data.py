@@ -27,7 +27,8 @@ DTYPE_MAPPING = {
     "price": "DECIMAL(10,2)",
     "quantity": "INTEGER",
     "product_name": "VARCHAR(100)",
-    "product_id": "VARCHAR(12)"
+    "product_id": "VARCHAR(12)",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================

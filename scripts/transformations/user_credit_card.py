@@ -41,7 +41,8 @@ REQUIRED_COLUMNS = [
 DTYPE_MAPPING = {
     "user_id": "VARCHAR(9)",
     "name": "VARCHAR(40)",
-    "issuing_bank": "VARCHAR(20)"
+    "issuing_bank": "VARCHAR(20)",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================

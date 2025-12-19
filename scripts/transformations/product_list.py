@@ -91,7 +91,8 @@ def main():
             product_id   VARCHAR(12),
             product_name VARCHAR(100),
             product_type VARCHAR(50),
-            price        DECIMAL(5,2)
+            price        DECIMAL(5,2),
+            ingested_at  TIMESTAMP
         );
     """)
 

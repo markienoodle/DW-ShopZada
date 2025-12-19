@@ -44,7 +44,8 @@ DTYPE_MAPPING = {
     "user_id": "VARCHAR(9)",
     "name": "VARCHAR(40)",
     "job_title": "VARCHAR(20)",
-    "job_level": "VARCHAR(20)"
+    "job_level": "VARCHAR(20)",
+    "ingested_at": "TIMESTAMP"
 }
 
 # =========================================================
