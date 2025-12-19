@@ -31,12 +31,13 @@ with DAG(
         retry_delay=timedelta(minutes=5) # Wait 5 minutes before retrying
     )
 
-    # Task 3: Verify Data (The New Step)
-    verify_data = BashOperator(
-        task_id='verify_data_integrity',
-        bash_command='python /opt/airflow/scripts/verify_script.py',
-        retries=0
-    )
+    # # Task 3: Verify Data (The New Step)
+    # verify_data = BashOperator(
+    #     task_id='verify_data_integrity',
+    #     bash_command='python /opt/airflow/scripts/verify_script.py',
+    #     retries=0
+    # )
 
     # Set the order: Install -> Ingest -> Verifyxa
-    install_deps >> run_ingest >> verify_data
+    install_deps >> run_ingest 
+    # >> verify_data

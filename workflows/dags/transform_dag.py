@@ -1,68 +1,87 @@
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.utils.trigger_rule import TriggerRule # <--- Added Import
 from datetime import datetime, timedelta
 
-# ==========================================
-# CONFIGURATION
-# ==========================================
-TRANSFORM_SCRIPTS_DIR = "/opt/airflow/scripts/transformations"
-
 default_args = {
-    'owner': 'shopzada',
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
-    'start_date': datetime(2023, 1, 1),
-    'catchup': False
 }
 
-# ==========================================
-# 1. DEFINE TARGET TABLES
-# ==========================================
-# This list must match the PREFIX of your filenames in the screenshot.
-# e.g., for "order_data.py", the item here is "order_data"
-target_tables = [
-    'campaign_data',
-    'order_data',
-    'order_with_merchant_data',
-    'product_list',
-    'transactional_campaign_data',
-    'user_data',
-    'merchant_data',
-    'staff_data',
-    'line_item_data_prices',
-    'line_item_data_products'
-]
-
-# ==========================================
-# 2. DAG DEFINITION
-# ==========================================
 with DAG(
-    dag_id='shopzada_transformation_layer_1',
+    'transform_dag',
     default_args=default_args,
-    description='Run transform and verify scripts matching the folder structure',
-    schedule_interval='@daily',
-    tags=['transform', 'layer1', 'grouped']
+    description='Runs transform scripts; continues even if some fail',
+    schedule_interval='@daily', 
+    start_date=datetime(2023, 1, 1),
+    catchup=False,
 ) as dag:
 
-    start = EmptyOperator(task_id='start')
-    end = EmptyOperator(task_id='end')
+    start_task = EmptyOperator(task_id='start')
+    end_task = EmptyOperator(
+        task_id='end',
+        trigger_rule=TriggerRule.ALL_DONE # Ensure 'end' marks success even if tasks failed
+    )
 
-    for table in target_tables:
+    # Update this path if needed
+    SCRIPT_PATH = "/opt/airflow/dags/transformations"
+
+    tables_to_process = [
+        'campaign_data',
+        'order_data',
+        'order_with_merchant_data',
+        'product_list',
+        'transactional_campaign_data',
+        'user_data',
+        'merchant_data',
+        'staff_data',
+        'line_item_data_prices',
+        'line_item_data_products'
+    ]
+
+    transform_task_groups = []
+
+    for table_name in tables_to_process:
         
         # 1. Transform Task
-        # Matches "order_data.py"
+        # trigger_rule='all_done' allows this to start even if the previous batch failed.
         transform_task = BashOperator(
-            task_id=f'transform_{table}',
-            bash_command=f'python {TRANSFORM_SCRIPTS_DIR}/{table}.py'
+            task_id=f'transform_{table_name}',
+            bash_command=f'python {SCRIPT_PATH}/{table_name}.py',
+            trigger_rule=TriggerRule.ALL_DONE 
         )
 
         # 2. Verify Task
-        # Matches "order_data_verify.py"
+        # We keep the default rule here. If transform fails, we SKIP verification.
         verify_task = BashOperator(
-            task_id=f'verify_{table}',
-            bash_command=f'python {TRANSFORM_SCRIPTS_DIR}/{table}_verify.py'
+            task_id=f'verify_{table_name}',
+            bash_command=f'python {SCRIPT_PATH}/{table_name}_verify.py'
         )
 
-        # 3. Dependency: Start -> Transform -> Verify -> End
-        start >> transform_task >> verify_task >> end
+        transform_task >> verify_task
+        verify_task >> end_task
+
+        transform_task_groups.append(transform_task)
+
+    # Batching Logic
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    batches = list(chunk_list(transform_task_groups, 2))
+
+    # Connect Start -> First Batch
+    start_task >> batches[0]
+
+    # Connect Batch i -> Batch i+1
+    for i in range(len(batches) - 1):
+        current_batch = batches[i]
+        next_batch = batches[i+1]
+        
+        for task in current_batch:
+            task >> next_batch
