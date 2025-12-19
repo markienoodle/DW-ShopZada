@@ -1,11 +1,12 @@
 import os
 import io
+import time
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-import time
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # =========================================================
 #                 DATABASE CONFIG
@@ -16,7 +17,7 @@ DB_HOST = os.getenv('DB_HOST', 'db')
 DB_PORT = os.getenv('DB_PORT', '5432')
 DB_NAME = os.getenv('DB_NAME', 'shopzada_dwh')
 
-# Detect Airflow container
+# Airflow container override
 if os.path.exists('/opt/airflow'):
     DB_HOST = 'shopzada-postgres-db'
 
@@ -25,9 +26,7 @@ DB_URI = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB
 # =========================================================
 #                 TABLE CONFIG
 # =========================================================
-SOURCE_TABLES = [
-    "raw_schema.merchant_data_html"
-]
+SOURCE_TABLES = ["raw_schema.merchant_data_html"]
 
 STAGING_SCHEMA = "staging1_schema"
 STAGING_TABLE = "merchant_data_cleaned"
@@ -43,9 +42,6 @@ REQUIRED_COLUMNS = [
     "contact_number"
 ]
 
-# =========================================================
-#          DATA TYPE MAPPING (EXPLICIT SQL TYPES)
-# =========================================================
 DTYPE_MAPPING = {
     "merchant_id": "VARCHAR(13)",
     "creation_date": "DATE",
@@ -59,63 +55,42 @@ DTYPE_MAPPING = {
 }
 
 # =========================================================
-#                GEOCODING SETUP
+#                NETWORK SESSION WITH FALLBACKS
 # =========================================================
-geolocator = Nominatim(user_agent="shopzada_merchant_elt")
+def create_session():
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
-def geocode_unique_cities(unique_cities):
-    """
-    Geocode only unique cities and return a mapping dictionary.
-    This is MUCH faster than geocoding every row individually.
-    """
-    geocode_map = {}
-    total = len(unique_cities)
-    
-    print(f"\n🌍 Geocoding {total} unique cities (not {total * 5000} individual records)...")
-    
-    for idx, city in enumerate(unique_cities, 1):
-        if pd.isna(city) or str(city).strip() == "":
-            geocode_map[city] = {'state': None, 'country': 'United States'}
-            continue
-        
-        city_clean = str(city).strip()
-        
-        # Progress indicator
-        if idx % 10 == 0 or idx == total:
-            print(f"  📍 Progress: {idx}/{total} unique cities processed...")
-        
-        # Try geocoding with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                location = geolocator.geocode(
-                    f"{city_clean}, United States",
-                    exactly_one=True,
-                    timeout=10,
-                    addressdetails=True
-                )
-                
-                if location and location.raw.get('address'):
-                    address = location.raw['address']
-                    state = address.get('state', None)
-                    geocode_map[city] = {'state': state, 'country': 'United States'}
-                else:
-                    geocode_map[city] = {'state': None, 'country': 'United States'}
-                
-                # Rate limiting - be nice to the API
-                time.sleep(0.5)  # Reduced from 1 second since we're doing fewer calls
-                break
-                
-            except (GeocoderTimedOut, GeocoderServiceError) as e:
-                if attempt < max_retries - 1:
-                    time.sleep(1)
-                    continue
-                else:
-                    print(f"  ⚠️  Geocoding failed for '{city}': {e}")
-                    geocode_map[city] = {'state': None, 'country': 'United States'}
-    
-    print(f"✅ Geocoding complete! Mapped {len(geocode_map)} unique cities.\n")
-    return geocode_map
+
+session = create_session()
+
+# =========================================================
+#            DETERMINISTIC STATE FALLBACK MAP
+# =========================================================
+US_STATES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island',
+    'SC': 'South Carolina', 'SD': 'South Dakota', 'TN': 'Tennessee',
+    'TX': 'Texas', 'UT': 'Utah', 'VT': 'Vermont', 'VA': 'Virginia',
+    'WA': 'Washington', 'WV': 'West Virginia', 'WI': 'Wisconsin',
+    'WY': 'Wyoming', 'DC': 'District of Columbia'
+}
 
 # =========================================================
 #                   DATA CLEANING
@@ -133,13 +108,13 @@ def clean_columns(df):
 
     df = df.copy()
 
-    # ---- creation_date → DATE only
+    # ---- 1. creation_date → DATE
     df["creation_date"] = (
         pd.to_datetime(df["creation_date"], errors="coerce")
         .dt.date
     )
 
-    # ---- contact_number → digits only
+    # ---- 2. contact_number → digits only
     df["contact_number"] = (
         df["contact_number"]
         .astype(str)
@@ -147,22 +122,20 @@ def clean_columns(df):
         .replace("", np.nan)
     )
 
-    # ---- OPTIMIZED GEOCODING: Only geocode unique cities
-    print(f"\n📊 Dataset info: {len(df)} total rows")
-    
-    # Get unique cities
-    unique_cities = df['city'].dropna().unique()
-    print(f"📊 Found {len(unique_cities)} unique cities to geocode")
-    
-    # Geocode only unique cities
-    geocode_map = geocode_unique_cities(unique_cities)
-    
-    # Map results back to all rows (FAST operation)
-    print("🔄 Mapping geocoded results to all rows...")
-    df['state'] = df['city'].map(lambda x: geocode_map.get(x, {}).get('state'))
-    df['country'] = df['city'].map(lambda x: geocode_map.get(x, {}).get('country', 'United States'))
-    
-    print("✅ Mapping complete!")
+    # ---- 3. State normalization fallback
+    df["state"] = (
+        df["state"]
+        .astype(str)
+        .str.strip()
+        .replace("", np.nan)
+        .map(lambda x: US_STATES.get(x.upper(), x) if isinstance(x, str) else x)
+    )
+
+    # ---- 4. Country fallback
+    df["country"] = df["country"].fillna("United States")
+
+    # ---- 5. Ingestion timestamp
+    df["ingested_at"] = pd.Timestamp.utcnow()
 
     return df.reset_index(drop=True)
 
@@ -174,26 +147,20 @@ def write_to_staging(df):
     conn = engine.raw_connection()
     cursor = conn.cursor()
 
-    # Ensure schema exists
     cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {STAGING_SCHEMA};")
-
-    # Reset table (order-style)
     cursor.execute(f"DROP TABLE IF EXISTS {STAGING_SCHEMA}.{STAGING_TABLE};")
 
-    col_defs = [f"{col} {dtype}" for col, dtype in DTYPE_MAPPING.items()]
-    create_stmt = f"""
+    col_defs = [f"{c} {t}" for c, t in DTYPE_MAPPING.items()]
+    cursor.execute(f"""
         CREATE TABLE {STAGING_SCHEMA}.{STAGING_TABLE} (
             {', '.join(col_defs)}
         );
-    """
-    cursor.execute(create_stmt)
+    """)
 
-    # Convert DataFrame → CSV buffer
     buffer = io.StringIO()
     df.to_csv(buffer, index=False, header=False)
     buffer.seek(0)
 
-    # COPY load
     cursor.copy_expert(
         f"""
         COPY {STAGING_SCHEMA}.{STAGING_TABLE}
@@ -207,7 +174,7 @@ def write_to_staging(df):
     cursor.close()
     conn.close()
 
-    print(f"✅ Loaded {len(df)} rows into {STAGING_SCHEMA}.{STAGING_TABLE} via COPY.")
+    print(f"✅ Loaded {len(df)} rows into {STAGING_SCHEMA}.{STAGING_TABLE}")
 
 # =========================================================
 #                   MAIN PIPELINE
@@ -224,29 +191,13 @@ def main():
 
     final_df = pd.concat(frames, ignore_index=True)
 
-    # ================= DISPLAY =================
-    print("\n" + "="*50)
-    print("📋 MERCHANT DATA PREVIEW")
-    print("="*50)
+    print("\n📊 MERCHANT DATA SUMMARY")
+    print(f"Rows: {len(final_df)}")
+    print(f"Columns: {list(final_df.columns)}")
     print(final_df.head(10))
-    print(f"\n📊 Shape: {final_df.shape}")
-    print(f"📊 Columns: {list(final_df.columns)}")
-    
-    # Show geocoding results
-    print("\n" + "="*50)
-    print("🗺️  GEOCODING RESULTS")
-    print("="*50)
-    print(f"Total records: {len(final_df)}")
-    print(f"Records with state found: {final_df['state'].notna().sum()}")
-    print(f"Records with no state: {final_df['state'].isna().sum()}")
-    print("\n📊 Top 10 States:")
-    print(final_df['state'].value_counts().head(10))
-    print("="*50 + "\n")
-    # ===========================================
 
     write_to_staging(final_df)
-
-    print("🎉 Merchant data ELT pipeline completed successfully!\n")
+    print("🎉 Merchant data ELT pipeline completed successfully!")
 
 
 if __name__ == "__main__":

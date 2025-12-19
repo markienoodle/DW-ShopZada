@@ -4,8 +4,9 @@ import time
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # =========================================================
 #                 DATABASE CONFIG
@@ -60,153 +61,35 @@ DTYPE_MAPPING = {
 }
 
 # =========================================================
-#                GEOCODING SETUP (STATE ONLY)
+#                GEOCODING SETUP WITH FALLBACKS
 # =========================================================
-geolocator = Nominatim(user_agent="shopzada_user_data_elt")
 
-def geocode_unique_cities(unique_cities):
-    """
-    Geocode unique cities to get STATE only.
-    """
-    geocode_map = {}
-    total = len(unique_cities)
-
-    print(f"\n🌍 Geocoding {total} unique cities (STATE only)...")
-
-    for idx, city in enumerate(unique_cities, 1):
-        if pd.isna(city) or str(city).strip() == "":
-            geocode_map[city] = None
-            continue
-
-        city_clean = str(city).strip()
-
-        if idx % 10 == 0 or idx == total:
-            print(f"  📍 Progress: {idx}/{total}")
-
-        for attempt in range(3):
-            try:
-                location = geolocator.geocode(
-                    f"{city_clean}, United States",
-                    exactly_one=True,
-                    timeout=10,
-                    addressdetails=True
-                )
-
-                if location and location.raw.get("address"):
-                    geocode_map[city] = location.raw["address"].get("state")
-                else:
-                    geocode_map[city] = None
-
-                time.sleep(0.5)
-                break
-
-            except (GeocoderTimedOut, GeocoderServiceError):
-                time.sleep(1)
-                if attempt == 2:
-                    geocode_map[city] = None
-
-    print("✅ Geocoding complete\n")
-    return geocode_map
-
-# =========================================================
-#                DATA CLEANING
-# =========================================================
-def remove_unnamed(df):
-    if df.columns[0].lower().startswith("unnamed"):
-        return df.drop(df.columns[0], axis=1)
-    return df
-
-
-def clean_columns(df):
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    df = df.copy()
-
-    # ---- 1. creation_date → DATE
-    df["creation_date"] = (
-        pd.to_datetime(df["creation_date"], errors="coerce")
-        .dt.date
+def create_session():
+    """Create a requests session with retry logic for Docker environments"""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504]
     )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
-    # ---- 3. City normalization
-    df["city"] = df["city"].astype(str).str.strip().str.title()
-
-    # ---- 4. STATE via Geopy (unique cities only)
-    unique_cities = df["city"].dropna().unique()
-    state_map = geocode_unique_cities(unique_cities)
-    df["state"] = df["city"].map(state_map)
-
-    # ---- 5. HARD ENFORCE COUNTRY
-    df["country"] = "United States"
-
-    return df.reset_index(drop=True)
-
-# =========================================================
-#                COPY LOAD
-# =========================================================
-def write_to_staging(df):
-    engine = create_engine(DB_URI)
-    conn = engine.raw_connection()
-    cursor = conn.cursor()
-
-    cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {STAGING_SCHEMA};")
-    cursor.execute(f"DROP TABLE IF EXISTS {STAGING_SCHEMA}.{STAGING_TABLE};")
-
-    col_defs = [f"{c} {t}" for c, t in DTYPE_MAPPING.items()]
-    cursor.execute(f"""
-        CREATE TABLE {STAGING_SCHEMA}.{STAGING_TABLE} (
-            {', '.join(col_defs)}
-        );
-    """)
-
-    buffer = io.StringIO()
-    df.to_csv(buffer, index=False, header=False)
-    buffer.seek(0)
-
-    cursor.copy_expert(
-        f"""
-        COPY {STAGING_SCHEMA}.{STAGING_TABLE}
-        FROM STDIN
-        WITH CSV NULL '' DELIMITER ',';
-        """,
-        buffer
-    )
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    print(f"✅ Loaded {len(df)} rows into {STAGING_SCHEMA}.{STAGING_TABLE}")
-
-# =========================================================
-#                MAIN PIPELINE
-# =========================================================
-def main():
-    engine = create_engine(DB_URI)
-    frames = []
-
-    for table in SOURCE_TABLES:
-        print(f"📥 Loading: {table}")
-        df = pd.read_sql(f"SELECT * FROM {table}", engine)
-        df = clean_columns(remove_unnamed(df))
-        frames.append(df)
-
-    final_df = pd.concat(frames, ignore_index=True)
-
-    print("\n" + "=" * 60)
-    print("📋 STAFF DATA PREVIEW")
-    print("=" * 60)
-    print(final_df.head(10))
-    print(f"\n📊 Rows: {len(final_df)}")
-    print(f"📊 States found: {final_df['state'].notna().sum()}")
-    print("=" * 60 + "\n")
-
-    write_to_staging(final_df)
-
-    print("🎉 Staff data ELT pipeline completed successfully!\n")
-
-
-if __name__ == "__main__":
-    main()
+# US State abbreviations to full names mapping
+US_STATES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming', 'DC': 'District of Columbia'
+}
