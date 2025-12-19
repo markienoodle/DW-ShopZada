@@ -28,6 +28,7 @@ SOURCE_TABLES = [
     "raw_schema.order_data_20220101_20221201_xlsx",
     "raw_schema.order_data_20221201_20230601_json",
     "raw_schema.order_data_20230601_20240101_html"
+    
 ]
 
 STAGING_SCHEMA = "staging1_schema"
@@ -35,39 +36,34 @@ STAGING_TABLE = "order_data_cleaned"
 
 REQUIRED_COLUMNS = [
     "order_id",
+    "campaign_id",
     "user_id",
-    "estimated_arrival",
-    "transaction_date",
     "merchant_id",
     "staff_id",
-    "delay_in_days"
+    "transaction_date",
+    "estimated_arrival",
+    "delay_in_days",
+    "availed"
 ]
 
 DTYPE_MAPPING = {
     "order_id": "VARCHAR(36)",
+    "campaign_id": "VARCHAR(13)",
     "user_id": "VARCHAR(9)",
-    "estimated_arrival": "INTEGER",
-    "transaction_date": "DATE",
     "merchant_id": "VARCHAR(13)",
     "staff_id": "VARCHAR(12)",
-    "delay_in_days": "INTEGER"
+    "transaction_date": "DATE",
+    "estimated_arrival": "INTEGER",
+    "delay_in_days": "INTEGER",
+    "availed": "BOOLEAN"
 }
-
 # =========================================================
 #                TERMINAL CHECKS
 # =========================================================
 def check_merge(df, table_name, merge_col):
     print(f"\n=== After merging table: {table_name} on '{merge_col}' ===")
     print(f"Total rows: {len(df)}")
-    duplicates = df[df.duplicated(subset=[merge_col], keep=False)]
-    print(f"Duplicate rows on {merge_col}: {len(duplicates)}")
-    missing = df[merge_col].isna().sum()
-    print(f"Rows with NULL in {merge_col}: {missing}")
-    null_counts = df.isna().sum()
-    if null_counts.any():
-        print("Missing values per column:")
-        print(null_counts[null_counts > 0])
-
+    
 # =========================================================
 #                MERGE FUNCTIONS
 # =========================================================
@@ -143,10 +139,6 @@ def clean_columns(df):
         df["transaction_date"], errors="coerce"
     ).dt.date
 
-    if df["estimated_arrival"].isna().any():
-        print("Warning: Some estimated_arrival values had no digits.")
-    if df["transaction_date"].isna().any():
-        print("Warning: Some transaction_date values could not be parsed.")
     return df
 
 # =========================================================
@@ -203,7 +195,8 @@ def main():
         ("raw_schema.order_delays_html", "unnamed_0"),
         ("raw_schema.order_with_merchant_data1_parquet", "order_id"),
         ("raw_schema.order_with_merchant_data2_parquet", "order_id"),
-        ("raw_schema.order_with_merchant_data3_csv", "order_id")
+        ("raw_schema.order_with_merchant_data3_csv", "order_id"),
+        ("raw_schema.transactional_campaign_data_csv", "order_id")
     ]
     merged_df = merge_additional_tables(merged_df, additional_tables)
 

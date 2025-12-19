@@ -26,7 +26,7 @@ def run_verification():
             print(f"--- Starting Airflow Verification for {STAGING_TABLE} ---")
 
             # 1. Row Count Check
-            # Your script merges 6 source tables + 4 additional tables. 
+            # Your script merges 6 source tables + 5 additional tables. 
             # We ensure the final table isn't empty.
             row_count = conn.execute(text(f"SELECT COUNT(*) FROM {STAGING_TABLE}")).scalar()
             print(f"[INFO] Row count: {row_count}")
