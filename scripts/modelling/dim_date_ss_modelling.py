@@ -10,7 +10,7 @@ DB_USER = os.getenv("DB_USER", "shopzada_admin")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "password123")
 DB_HOST = os.getenv("DB_HOST", "db")
 DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "shopzada_dw")
+DB_NAME = os.getenv("DB_NAME", "shopzada_dwh")
 
 # Airflow container override
 if os.path.exists("/opt/airflow"):

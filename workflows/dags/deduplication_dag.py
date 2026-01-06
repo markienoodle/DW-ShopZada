@@ -13,9 +13,7 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# Define the connection ID here. 
-# 'postgres_default' is the standard ID Airflow uses for Postgres.
-# Make sure your 'staging1_schema' exists in the database this connection points to.
+# Define the Postgres connection ID
 DB_CONNECTION_ID = 'airflow_db'
 
 with DAG(
@@ -25,38 +23,77 @@ with DAG(
     schedule_interval='@daily',
     start_date=datetime(2023, 1, 1),
     catchup=False,
-    # Ensure this path matches where your SQL files are located
     template_searchpath=['/opt/airflow/scripts/deduplications'] 
 ) as dag:
 
-    # 1. Create Start and End markers
+    # Start and End markers
     start_task = EmptyOperator(task_id='start')
     end_task = EmptyOperator(task_id='end')
 
-    # 2. Define the SQL tasks using the Postgres Connection
+    # Deduplication tasks
     dedup_campaign = PostgresOperator(
         task_id='dedup_campaign',
-        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
+        postgres_conn_id=DB_CONNECTION_ID,
         sql='campaign_data_dedup.sql'
     )
 
     dedup_line_item = PostgresOperator(
         task_id='dedup_line_item',
-        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
+        postgres_conn_id=DB_CONNECTION_ID,
         sql='line_item_data_dedup.sql'
+    )
+
+    dedup_merchant = PostgresOperator(
+        task_id='dedup_merchant',
+        postgres_conn_id=DB_CONNECTION_ID,
+        sql='merchant_data_dedup.sql'
     )
 
     dedup_order = PostgresOperator(
         task_id='dedup_order',
-        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
+        postgres_conn_id=DB_CONNECTION_ID,
         sql='order_data_dedup.sql'
     )
 
     dedup_product = PostgresOperator(
         task_id='dedup_product',
-        postgres_conn_id=DB_CONNECTION_ID,  # UPDATED: Points to Postgres
+        postgres_conn_id=DB_CONNECTION_ID,
         sql='product_list_dedup.sql'
     )
 
-    # 3. Set Dependencies
-    start_task >> [dedup_campaign, dedup_line_item, dedup_order, dedup_product] >> end_task
+    dedup_staff = PostgresOperator(
+        task_id='dedup_staff',
+        postgres_conn_id=DB_CONNECTION_ID,
+        sql='staff_data_dedup.sql'
+    )
+
+    dedup_user_credit_card = PostgresOperator(
+        task_id='dedup_user_credit_card',
+        postgres_conn_id=DB_CONNECTION_ID,
+        sql='user_credit_card_dedup.sql'
+    )
+
+    dedup_user = PostgresOperator(
+        task_id='dedup_user',
+        postgres_conn_id=DB_CONNECTION_ID,
+        sql='user_data_dedup.sql'
+    )
+
+    dedup_user_job = PostgresOperator(
+        task_id='dedup_user_job',
+        postgres_conn_id=DB_CONNECTION_ID,
+        sql='user_job_dedup.sql'
+    )
+
+    # Set dependencies: all dedup tasks run in parallel
+    start_task >> [
+        dedup_campaign,
+        dedup_line_item,
+        dedup_merchant,
+        dedup_order,
+        dedup_product,
+        dedup_staff,
+        dedup_user_credit_card,
+        dedup_user,
+        dedup_user_job
+    ] >> end_task

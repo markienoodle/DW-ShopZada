@@ -17,7 +17,7 @@ x-airflow-common: &airflow-common
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
 
-    # 2. SCRIPTS (Allowed in Root per your requirements image)
+    # 2. SCRIPTS (Allowed in Root per the requirements image)
     - ../scripts:/opt/airflow/scripts
 
     # 3. DATA (Stays in workflows folder)
